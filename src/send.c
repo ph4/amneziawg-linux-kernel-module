@@ -3,6 +3,9 @@
  * Copyright (C) 2015-2019 Jason A. Donenfeld <Jason@zx2c4.com>. All Rights Reserved.
  */
 
+#include "compat/compat.h"
+#include "junk.h"
+#include "magic_header.h"
 #include "queueing.h"
 #include "timers.h"
 #include "device.h"
@@ -20,12 +23,6 @@
 #include <net/udp.h>
 #include <net/sock.h>
 
-static u32 wg_get_random_u32_inclusive(u32 floor, u32 ceil)
-{
-	u32 diff = ceil - floor + 1;
-	return floor + (get_random_u32() % diff);
-}
-
 static void wg_packet_send_handshake_initiation(struct wg_peer *peer)
 {
 	struct message_handshake_initiation packet;
@@ -33,6 +30,8 @@ static void wg_packet_send_handshake_initiation(struct wg_peer *peer)
 	void *buffer;
 	u8 ds;
 	u16 junk_packet_count, junk_packet_size;
+	int i;
+	struct jp_spec* spec;
 
 	if (!wg_birthdate_has_expired(atomic64_read(&peer->last_sent_handshake),
 				      REKEY_TIMEOUT))
@@ -43,43 +42,42 @@ static void wg_packet_send_handshake_initiation(struct wg_peer *peer)
 			    peer->device->dev->name, peer->internal_id,
 			    &peer->endpoint.addr);
 
-	if (wg->advanced_security_config.advanced_security && peer->advanced_security) {
-		junk_packet_count = wg->advanced_security_config.junk_packet_count;
-		buffer = kzalloc(wg->advanced_security_config.junk_packet_max_size, GFP_KERNEL);
+	atomic_set(&peer->jp_packet_counter, get_random_u32());
+	for (i = 0; i < ARRAY_SIZE(wg->ispecs); ++i)
+	{
+		spec = &wg->ispecs[i];
+		if (spec->pkt_size > 0) {
+			mutex_lock(&spec->lock);
+			jp_spec_applymods(spec, peer);
+			wg_socket_send_buffer_to_peer(peer, spec->pkt, spec->pkt_size, 0, 0);
+			atomic_inc(&peer->jp_packet_counter);
+			mutex_unlock(&spec->lock);
+		}
+	}
+	
+	if (wg->advanced_security && peer->advanced_security) {
+		junk_packet_count = wg->jc;
+		buffer = kzalloc(wg->jmax, GFP_KERNEL);
 
 		while (junk_packet_count-- > 0) {
-			junk_packet_size = (u16) wg_get_random_u32_inclusive(
-					wg->advanced_security_config.junk_packet_min_size,
-					wg->advanced_security_config.junk_packet_max_size);
+			junk_packet_size = (u16) get_random_u32_inclusive(wg->jmin, wg->jmax);
 
 			get_random_bytes(buffer, junk_packet_size);
 			get_random_bytes(&ds, 1);
-			wg_socket_send_buffer_to_peer(peer, buffer, junk_packet_size, ds);
+			wg_socket_send_buffer_to_peer(peer, buffer, junk_packet_size, ds, 0);
 		}
 
 		kfree(buffer);
 	}
 
-	net_dbg_ratelimited("%s: Initiation magic header: %u\n",
-	                    peer->device->dev->name,
-						peer->advanced_security ? wg->advanced_security_config.init_packet_magic_header :
-						MESSAGE_HANDSHAKE_INITIATION);
-
-	if (wg_noise_handshake_create_initiation(&packet, &peer->handshake, peer->advanced_security ?
-			wg->advanced_security_config.init_packet_magic_header : MESSAGE_HANDSHAKE_INITIATION)) {
+	if (wg_noise_handshake_create_initiation(&packet, &peer->handshake, mh_genheader(&wg->headers[MSGIDX_HANDSHAKE_INIT]))) {
 		wg_cookie_add_mac_to_packet(&packet, sizeof(packet), peer);
 		wg_timers_any_authenticated_packet_traversal(peer);
 		wg_timers_any_authenticated_packet_sent(peer);
 		atomic64_set(&peer->last_sent_handshake,
 			     ktime_get_coarse_boottime_ns());
 
-		if (wg->advanced_security_config.advanced_security && peer->advanced_security) {
-			wg_socket_send_junked_buffer_to_peer(peer, &packet, sizeof(packet),
-			                              HANDSHAKE_DSCP, wg->advanced_security_config.init_packet_junk_size);
-		} else {
-			wg_socket_send_buffer_to_peer(peer, &packet, sizeof(packet),
-			                              HANDSHAKE_DSCP);
-		}
+		wg_socket_send_buffer_to_peer(peer, &packet, sizeof(packet), HANDSHAKE_DSCP, wg->junk_size[MSGIDX_HANDSHAKE_INIT]);
 		wg_timers_handshake_initiated(peer);
 	}
 }
@@ -133,10 +131,7 @@ void wg_packet_send_handshake_response(struct wg_peer *peer)
 			    peer->device->dev->name, peer->internal_id,
 			    &peer->endpoint.addr);
 
-	if (wg_noise_handshake_create_response(&packet, &peer->handshake,
-		                                   peer->advanced_security ?
-		                                   wg->advanced_security_config.response_packet_magic_header :
-		                                   MESSAGE_HANDSHAKE_RESPONSE)) {
+	if (wg_noise_handshake_create_response(&packet, &peer->handshake, mh_genheader(&wg->headers[MSGIDX_HANDSHAKE_RESPONSE]))) {
 		wg_cookie_add_mac_to_packet(&packet, sizeof(packet), peer);
 		if (wg_noise_handshake_begin_session(&peer->handshake,
 						     &peer->keypairs)) {
@@ -145,16 +140,7 @@ void wg_packet_send_handshake_response(struct wg_peer *peer)
 			wg_timers_any_authenticated_packet_sent(peer);
 			atomic64_set(&peer->last_sent_handshake,
 				     ktime_get_coarse_boottime_ns());
-			if (wg->advanced_security_config.advanced_security && peer->advanced_security) {
-				wg_socket_send_junked_buffer_to_peer(peer, &packet,
-				                              sizeof(packet),
-				                              HANDSHAKE_DSCP,
-				                              wg->advanced_security_config.response_packet_junk_size);
-			} else {
-				wg_socket_send_buffer_to_peer(peer, &packet,
-							      sizeof(packet),
-							      HANDSHAKE_DSCP);
-			}
+			wg_socket_send_buffer_to_peer(peer, &packet, sizeof(packet), HANDSHAKE_DSCP, wg->junk_size[MSGIDX_HANDSHAKE_RESPONSE]);
 		}
 	}
 }
@@ -168,17 +154,8 @@ void wg_packet_send_handshake_cookie(struct wg_device *wg,
 	net_dbg_skb_ratelimited("%s: Sending cookie response for denied handshake message for %pISpfsc\n",
 				wg->dev->name, initiating_skb);
 
-	if (SKB_TYPE_LE32(initiating_skb) == cpu_to_le32(MESSAGE_HANDSHAKE_INITIATION) ||
-	    SKB_TYPE_LE32(initiating_skb) == cpu_to_le32(MESSAGE_HANDSHAKE_RESPONSE)) {
-		wg_cookie_message_create(&packet, initiating_skb, sender_index,
-		                         &wg->cookie_checker, MESSAGE_HANDSHAKE_COOKIE);
-
-	} else {
-		wg_cookie_message_create(&packet, initiating_skb, sender_index,
-		                         &wg->cookie_checker, wg->advanced_security_config.cookie_packet_magic_header);
-	}
-	wg_socket_send_buffer_as_reply_to_skb(wg, initiating_skb, &packet,
-					      sizeof(packet));
+	wg_cookie_message_create(&packet, initiating_skb, sender_index, &wg->cookie_checker, mh_genheader(&wg->headers[MSGIDX_HANDSHAKE_COOKIE]));
+	wg_socket_send_buffer_as_reply_to_skb(wg, initiating_skb, &packet, sizeof(packet), wg->junk_size[MSGIDX_HANDSHAKE_COOKIE]);
 }
 
 static void keep_key_fresh(struct wg_peer *peer)
@@ -219,8 +196,8 @@ static unsigned int calculate_skb_padding(struct sk_buff *skb)
 	return padded_size - last_unit;
 }
 
-static bool encrypt_packet(u32 message_type, struct sk_buff *skb, struct noise_keypair *keypair,
-			   simd_context_t *simd_context)
+static bool encrypt_packet(u32 message_type, size_t junk_size, struct sk_buff *skb, struct noise_keypair *keypair
+			   COMPAT_MAYBE_SIMD_CONTEXT(simd_context_t *simd_context))
 {
 	unsigned int padding_len, plaintext_len, trailer_len;
 	struct scatterlist sg[MAX_SKB_FRAGS + 8];
@@ -251,7 +228,7 @@ static bool encrypt_packet(u32 message_type, struct sk_buff *skb, struct noise_k
 	/* Expand head section to have room for our header and the network
 	 * stack's headers.
 	 */
-	if (unlikely(skb_cow_head(skb, DATA_PACKET_HEAD_ROOM) < 0))
+	if (unlikely(skb_cow_head(skb, DATA_PACKET_HEAD_ROOM + junk_size) < 0))
 		return false;
 
 	/* Finalize checksum calculation for the inner packet, if required. */
@@ -269,22 +246,24 @@ static bool encrypt_packet(u32 message_type, struct sk_buff *skb, struct noise_k
 	header->counter = cpu_to_le64(PACKET_CB(skb)->nonce);
 	pskb_put(skb, trailer, trailer_len);
 
+	get_random_bytes(skb_push(skb, junk_size), junk_size);
+
 	/* Now we can encrypt the scattergather segments */
 	sg_init_table(sg, num_frags);
-	if (skb_to_sgvec(skb, sg, sizeof(struct message_data),
+	if (skb_to_sgvec(skb, sg, sizeof(struct message_data) + junk_size,
 			 noise_encrypted_len(plaintext_len)) <= 0)
 		return false;
 	return chacha20poly1305_encrypt_sg_inplace(sg, plaintext_len, NULL, 0,
 						   PACKET_CB(skb)->nonce,
-						   keypair->sending.key,
-						   simd_context);
+						   keypair->sending.key
+							COMPAT_MAYBE_SIMD_CONTEXT(simd_context));
 }
 
 void wg_packet_send_keepalive(struct wg_peer *peer)
 {
 	struct sk_buff *skb;
 
-	if (skb_queue_empty(&peer->staged_packet_queue)) {
+	if (skb_queue_empty_lockless(&peer->staged_packet_queue)) {
 		skb = alloc_skb(DATA_PACKET_HEAD_ROOM + MESSAGE_MINIMUM_LENGTH,
 				GFP_ATOMIC);
 		if (unlikely(!skb))
@@ -352,20 +331,23 @@ void wg_packet_encrypt_worker(struct work_struct *work)
 						 work)->ptr;
 	struct sk_buff *first, *skb, *next;
 	struct wg_device *wg;
-	simd_context_t simd_context;
 
+#ifdef COMPAT_CRYPTO_IS_ZINC
+	simd_context_t simd_context;
 	simd_get(&simd_context);
+#endif
 	while ((first = ptr_ring_consume_bh(&queue->ring)) != NULL) {
 		enum packet_state state = PACKET_STATE_CRYPTED;
 
 		skb_list_walk_safe(first, skb, next) {
 			wg = PACKET_PEER(first)->device;
 
-			if (likely(encrypt_packet(PACKET_PEER(first)->advanced_security ?
-						  wg->advanced_security_config.transport_packet_magic_header : MESSAGE_DATA,
+			if (likely(encrypt_packet(
+						  mh_genheader(&wg->headers[MSGIDX_TRANSPORT]),
+						  wg->junk_size[MSGIDX_TRANSPORT],
 						  skb,
-						  PACKET_CB(first)->keypair,
-						  &simd_context))) {
+						  PACKET_CB(first)->keypair
+						  COMPAT_MAYBE_SIMD_CONTEXT(&simd_context)))) {
 				wg_reset_packet(skb, true);
 			} else {
 				state = PACKET_STATE_DEAD;
@@ -374,9 +356,15 @@ void wg_packet_encrypt_worker(struct work_struct *work)
 		}
 		wg_queue_enqueue_per_peer_tx(first, state);
 
+#ifdef COMPAT_CRYPTO_IS_ZINC
 		simd_relax(&simd_context);
+#endif
+		if (need_resched())
+			cond_resched();
 	}
+#ifdef COMPAT_CRYPTO_IS_ZINC
 	simd_put(&simd_context);
+#endif
 }
 
 static void wg_packet_create_data(struct wg_peer *peer, struct sk_buff *first)
@@ -389,7 +377,7 @@ static void wg_packet_create_data(struct wg_peer *peer, struct sk_buff *first)
 		goto err;
 
 	ret = wg_queue_enqueue_per_device_and_peer(&wg->encrypt_queue, &peer->tx_queue, first,
-						   wg->packet_crypt_wq, &wg->encrypt_queue.last_cpu);
+						   wg->packet_crypt_wq);
 	if (unlikely(ret == -EPIPE))
 		wg_queue_enqueue_per_peer_tx(first, PACKET_STATE_DEAD);
 err:
@@ -404,7 +392,8 @@ err:
 void wg_packet_purge_staged_packets(struct wg_peer *peer)
 {
 	spin_lock_bh(&peer->staged_packet_queue.lock);
-	peer->device->dev->stats.tx_dropped += peer->staged_packet_queue.qlen;
+	DEV_STATS_ADD(peer->device->dev, tx_dropped,
+		      peer->staged_packet_queue.qlen);
 	__skb_queue_purge(&peer->staged_packet_queue);
 	spin_unlock_bh(&peer->staged_packet_queue.lock);
 }

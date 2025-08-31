@@ -6,9 +6,9 @@
 #ifndef _WG_MESSAGES_H
 #define _WG_MESSAGES_H
 
-#include <zinc/curve25519.h>
-#include <zinc/chacha20poly1305.h>
-#include <zinc/blake2s.h>
+#include <crypto/curve25519.h>
+#include <crypto/chacha20poly1305.h>
+#include <crypto/blake2s.h>
 
 #include <linux/kernel.h>
 #include <linux/param.h>
@@ -59,6 +59,13 @@ enum message_type {
 	MESSAGE_HANDSHAKE_RESPONSE = 2,
 	MESSAGE_HANDSHAKE_COOKIE = 3,
 	MESSAGE_DATA = 4
+};
+
+enum message_index {
+	MSGIDX_HANDSHAKE_INIT = MESSAGE_HANDSHAKE_INITIATION - 1,
+	MSGIDX_HANDSHAKE_RESPONSE = MESSAGE_HANDSHAKE_RESPONSE - 1,
+	MSGIDX_HANDSHAKE_COOKIE = MESSAGE_HANDSHAKE_COOKIE - 1,
+	MSGIDX_TRANSPORT = MESSAGE_DATA - 1
 };
 
 struct message_header {
