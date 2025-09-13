@@ -16,6 +16,8 @@
 #define ISRHEL7
 #elif RHEL_MAJOR == 8
 #define ISRHEL8
+#elif RHEL_MAJOR == 9
+#define ISRHEL9
 #endif
 #endif
 #ifdef UTS_UBUNTU_RELEASE_ABI
@@ -868,7 +870,7 @@ static inline void skb_mark_not_on_list(struct sk_buff *skb)
 #endif
 #endif
 
-#if LINUX_VERSION_CODE < KERNEL_VERSION(5, 5, 0) && !defined(ISRHEL8)
+#if LINUX_VERSION_CODE < KERNEL_VERSION(5, 5, 0) && !defined(ISRHEL8) && !defined(ISRHEL9)
 #define genl_dumpit_info(cb) ({ \
 	struct { struct nlattr **attrs; } *a = (void *)((u8 *)cb->args + offsetofend(struct dump_ctx, next_allowedip)); \
 	BUILD_BUG_ON(sizeof(cb->args) < offsetofend(struct dump_ctx, next_allowedip) + sizeof(*a)); \
@@ -1137,6 +1139,7 @@ struct dst_cache_pcpu {
 	};
 };
 #define COMPAT_HAS_DEFINED_DST_CACHE_PCPU
+#ifndef ISRHEL9
 static inline void dst_cache_reset_now(struct dst_cache *dst_cache)
 {
 	int i;
@@ -1154,6 +1157,7 @@ static inline void dst_cache_reset_now(struct dst_cache *dst_cache)
 		dst_release(dst);
 	}
 }
+#endif
 #endif
 
 #if defined(ISUBUNTU1604) || defined(ISRHEL7)
@@ -1206,7 +1210,7 @@ static inline void dst_cache_reset_now(struct dst_cache *dst_cache)
 #define flowi6_to_flowi_common(fl4) flowi6_to_flowi(fl4)
 #endif
 
-#if LINUX_VERSION_CODE < KERNEL_VERSION(6, 6, 0)
+#if LINUX_VERSION_CODE < KERNEL_VERSION(6, 6, 0) && !defined(ISRHEL9)
 #define genl_info_dump(cb) genl_dumpit_info(cb)
 #endif
 
@@ -1214,7 +1218,7 @@ static inline void dst_cache_reset_now(struct dst_cache *dst_cache)
 #define timer_delete_sync(timer) del_timer_sync(timer)
 #endif
 
-#if LINUX_VERSION_CODE < KERNEL_VERSION(6, 2, 0)
+#if LINUX_VERSION_CODE < KERNEL_VERSION(6, 2, 0) && !defined(ISRHEL9)
 #include <linux/random.h>
 static inline u32 get_random_u32_below(u32 ceil)
 {
@@ -1226,7 +1230,7 @@ static inline u32 get_random_u32_inclusive(u32 floor, u32 ceil)
 }
 #endif
 
-#if LINUX_VERSION_CODE < KERNEL_VERSION(6, 1, 0)
+#if LINUX_VERSION_CODE < KERNEL_VERSION(6, 1, 0) && !defined(ISRHEL9)
 #define COMPAT_NETIF_HAS_WEIGHT
 #endif
 
@@ -1234,12 +1238,12 @@ static inline u32 get_random_u32_inclusive(u32 floor, u32 ceil)
 #define COMPAT_GENL_HAS_RESV_START_OP
 #endif
 
-#if LINUX_VERSION_CODE < KERNEL_VERSION(6, 2, 0)
+#if LINUX_VERSION_CODE < KERNEL_VERSION(6, 2, 0) && !defined(ISRHEL9)
 #define DEV_STATS_INC(DEV, FIELD) ++DEV->stats.FIELD
 #define DEV_STATS_ADD(DEV, FIELD, VAL) DEV->stats.FIELD += VAL
 #endif
 
-#if LINUX_VERSION_CODE < KERNEL_VERSION(5, 17, 0)
+#if LINUX_VERSION_CODE < KERNEL_VERSION(5, 17, 0) && !defined(ISRHEL9)
 #define COMPAT_SKB_HAS_SKB_START
 #endif
 
@@ -1247,7 +1251,7 @@ static inline u32 get_random_u32_inclusive(u32 floor, u32 ceil)
 #define dev_get_tstats64 ip_tunnel_get_stats64
 #endif
 
-#if LINUX_VERSION_CODE >= KERNEL_VERSION(6, 12, 0)
+#if LINUX_VERSION_CODE >= KERNEL_VERSION(6, 12, 0) || defined(ISRHEL9)
 #define COMPAT_NETDEV_HAS_LLTX_PARAM
 #endif
 
